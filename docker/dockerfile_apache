@@ -1,0 +1,83 @@
+# Dockerfile for Apache server with additional tools
+FROM httpd:latest
+
+# Maintainer information
+LABEL maintainer="jerry"
+
+# Set working directory
+WORKDIR /usr/local/apache2/
+
+# Install additional tools and clone Apache Directory Listing
+RUN apt-get update && \
+    apt-get install -y \
+    ca-certificates \
+    curl  \
+    vim \
+    git \
+    openssl && \
+    update-ca-certificates --fresh && \
+    cd /tmp && \
+    GIT_SSL_NO_VERIFY=1 git clone https://github.com/ramlmn/Apache-Directory-Listing.git && \
+    cp -r Apache-Directory-Listing/directory-listing /usr/local/apache2/htdocs/ && \
+    cp Apache-Directory-Listing/htaccess.txt /usr/local/apache2/htdocs/.htaccess && \
+    sed -i 's/{LISTING_DIRECTORY}/\/directory-listing/g' /usr/local/apache2/htdocs/.htaccess && \
+    sed -i 's/{LISTING_STYLE}/table-darkmode/g' /usr/local/apache2/htdocs/.htaccess && \
+    rm -rf /tmp/Apache-Directory-Listing && \
+    rm -rf /var/lib/apt/lists/*
+
+# Enable .htaccess support, SSL, and WebDAV modules
+RUN sed -i '/<Directory "\/usr\/local\/apache2\/htdocs">/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule rewrite_module/LoadModule rewrite_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule ssl_module/LoadModule ssl_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule socache_shmcb_module/LoadModule socache_shmcb_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule dav_module/LoadModule dav_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule dav_fs_module/LoadModule dav_fs_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#LoadModule dav_lock_module/LoadModule dav_lock_module/' /usr/local/apache2/conf/httpd.conf && \
+    sed -i 's/#Include conf\/extra\/httpd-ssl.conf/Include conf\/extra\/httpd-ssl.conf/' /usr/local/apache2/conf/httpd.conf
+
+# Create DAV lock DB directory with open permissions so Apache can write the lock file
+RUN mkdir -p /usr/local/apache2/var && \
+    chmod 777 /usr/local/apache2/var
+
+# Add WebDAV config
+COPY webdav.conf /usr/local/apache2/conf/extra/webdav.conf
+RUN echo 'Include conf/extra/webdav.conf' >> /usr/local/apache2/conf/httpd.conf
+
+# Generate self-signed SSL certificates
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /usr/local/apache2/conf/server.key \
+    -out /usr/local/apache2/conf/server.crt \
+    -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+
+# Configure SSL in httpd-ssl.conf
+RUN sed -i 's/ServerName www.example.com:443/ServerName localhost:443/' /usr/local/apache2/conf/extra/httpd-ssl.conf && \
+    sed -i 's|SSLCertificateFile "/usr/local/apache2/conf/server.crt"|SSLCertificateFile "/usr/local/apache2/conf/server.crt"|' /usr/local/apache2/conf/extra/httpd-ssl.conf && \
+    sed -i 's|SSLCertificateKeyFile "/usr/local/apache2/conf/server.key"|SSLCertificateKeyFile "/usr/local/apache2/conf/server.key"|' /usr/local/apache2/conf/extra/httpd-ssl.conf && \
+    sed -i '/<Directory "\/usr\/local\/apache2\/htdocs">/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /usr/local/apache2/conf/extra/httpd-ssl.conf
+
+# Remove default index.html and create custom redirect
+RUN rm -f /usr/local/apache2/htdocs/index.html && \
+    echo '<!DOCTYPE html>' > /usr/local/apache2/htdocs/index.html && \
+    echo '<html lang="en">' >> /usr/local/apache2/htdocs/index.html && \
+    echo '<head>' >> /usr/local/apache2/htdocs/index.html && \
+    echo '    <meta charset="UTF-8">' >> /usr/local/apache2/htdocs/index.html && \
+    echo '    <meta http-equiv="refresh" content="0; url=https://localhost:8443/files">' >> /usr/local/apache2/htdocs/index.html && \
+    echo '    <title>Redirecting...</title>' >> /usr/local/apache2/htdocs/index.html && \
+    echo '</head>' >> /usr/local/apache2/htdocs/index.html && \
+    echo '<body>' >> /usr/local/apache2/htdocs/index.html && \
+    echo '</body>' >> /usr/local/apache2/htdocs/index.html && \
+    echo '</html>' >> /usr/local/apache2/htdocs/index.html
+
+# Add entrypoint script to fix volume permissions at runtime
+COPY apache-entrypoint.sh /usr/local/bin/apache-entrypoint.sh
+
+# Strip Windows CRLF line endings (in case the file was edited on Windows)
+# so the shebang resolves correctly at exec time, then make it executable.
+RUN sed -i 's/\r$//' /usr/local/bin/apache-entrypoint.sh && \
+    chmod +x /usr/local/bin/apache-entrypoint.sh
+
+# Expose both HTTP and HTTPS ports
+EXPOSE 80 443
+
+ENTRYPOINT ["/usr/local/bin/apache-entrypoint.sh"]
+

@@ -1,0 +1,12 @@
+services:
+  fileserver-app:
+    build:
+      context: .
+      dockerfile: dockerfile_apache
+    image: apache-app:latest
+    container_name: apache-app
+    restart: unless-stopped
+    volumes:
+        - ../:/usr/local/apache2/htdocs/files
+    ports:
+      - "8443:443"
